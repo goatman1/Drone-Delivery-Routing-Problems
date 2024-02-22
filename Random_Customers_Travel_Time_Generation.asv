@@ -1,0 +1,304 @@
+clear;clc;
+load("Wind_Field.mat");
+%% Select the area and speed coefficient 
+zeta = 1; % speed up/down factor
+zoom_factor = 10; % factor to increase dimensions
+zoom_matrix = ones(zoom_factor); % zoom matrix
+time_range = 79 - 55; % 9 am to 1 pm
+zoomed_magnitude = zeros(size(magnitude, 1) * zoom_factor, size(magnitude, 2) * zoom_factor, time_range);
+zoomed_direction = zeros(size(magnitude, 1) * zoom_factor, size(magnitude, 2) * zoom_factor, time_range);
+zoomed_u_data = zeros(size(magnitude, 1) * zoom_factor, size(magnitude, 2) * zoom_factor, time_range);
+zoomed_v_data = zeros(size(magnitude, 1) * zoom_factor, size(magnitude, 2) * zoom_factor, time_range);
+%%
+for t = 1:time_range
+    % Scale up the magnitude matrix using kron
+    zoomed_magnitude(:, :, t) = zeta * kron(zoom_matrix, magnitude(:, :, t));
+    zoomed_direction(:, :, t) = kron(zoom_matrix, direction(:, :, t));
+    zoomed_u_data(:, :, t) = zeta * kron(zoom_matrix, u_data(:, :, t));
+    zoomed_v_data(:, :, t) = zeta * kron(zoom_matrix, v_data(:, :, t));   
+end
+
+% for t = 1:size(magnitude, 3)
+%     % Scale up the magnitude matrix using kron
+%     zoomed_u_data(:, :, t) = zeta * kron(zoom_matrix, u_data(:, :, t));
+%     zoomed_v_data(:, :, t) = zeta * kron(zoom_matrix, v_data(:, :, t));    
+% end
+l_sw = size(zoomed_magnitude,1);
+l_cs = size(zoomed_magnitude,2);
+%% Draw its histogram (Do not execute in the TD scenarios)
+mean_field = mean(magnitude_h,"all");
+var_field = var(magnitude_h,0,"all");
+std_field = std(magnitude_h(:));
+figure(1)
+histogram(magnitude_h(:), 'Normalization', 'probability', 'EdgeColor', 'none');
+hold on;
+% 
+% % Fit a normal distribution to the data
+% pd = fitdist(magnitude_h(:), 'Normal');
+% % Get x-values for the fitted curve 
+% x_values = linspace(min(magnitude_h(:)), max(magnitude_h(:)), 1000);
+% % Evaluate the fitted distribution at the x-values
+% y_values = pdf(pd, x_values);
+% % Plot the fitted normalization curve
+% plot(x_values, y_values, 'LineWidth', 1, 'Color', 'red');
+
+ylimits = ylim;
+line([mean_field mean_field], ylimits, 'Color', 'red', 'LineWidth', 2);
+line([mean_field-std_field mean_field-std_field], ylimits, 'Color', 'g', 'LineWidth', 1, 'LineStyle', '--');
+line([mean_field+std_field mean_field+std_field], ylimits, 'Color', 'g', 'LineWidth', 1, 'LineStyle', '--');
+xlabel('Wind Speed')
+ylabel('Probability')
+title('Distribution of Wind Speed at h = 80m')
+% Add legend
+legend({'Wind Speed Data', 'Mean', 'Mean ± Std'}, 'Location', 'best');
+grid on
+% print('Histogram of Wind Speed at h = 80m.png', '-dpng', '-r300');
+%% Fixed customers locations (only if necessary)
+% load("Fixed Location_C50.mat");
+% m = nodes(1,:);
+% n = nodes(2,:);
+% C_Num = length(nodes)-1;
+%% generate the random customers
+% Generate random indices for selecting C_Num points
+C_Num = 50; % Customer Number
+indices = randperm(l_sw*l_cs, C_Num); %random select customers
+central_node = [l_cs/2, l_sw/2]; % Depot
+
+
+% Convert indices to subscripts
+[m,n] = ind2sub([l_cs, l_sw], indices); % Customer Locations
+m = [central_node(1),m];
+n = [central_node(2),n];
+nodes = [m;n];
+% save('Fixed Location_C500.mat','nodes')
+%% Compute distance and angle between each locations
+% Compute distances between selected points
+Distance = pdist2([m', n'], [m', n']);
+
+% calculate the included angle between each pair of points
+phi = zeros(C_Num+1); % initialize the angle matrix
+
+for i = 1:C_Num+1
+    for j = i+1:C_Num+1
+        % Calculate the vector that represents the arc
+        arc_vector = nodes(:,i) - nodes(:,j);
+        % Calculate the dot product of the arc vector and the unit vector of the x-axis
+        dot_product = arc_vector(1)/norm(arc_vector)*1;
+        % Calculate the angle between the arc and the x-axis in radians
+        angle = acos(dot_product);
+        phi(i, j) = angle;
+        phi(j, i) = angle + pi;
+    end
+end
+
+%% Visualization
+% Plot the points
+[x, y] = meshgrid(1:l_cs, 1:l_sw);
+figure(2)
+% Wind Field
+imagesc('CData',zoomed_magnitude(:,:,1)')
+colorbar
+hold on 
+quiver(y(1:150:end,1:150:end), x(1:150:end,1:150:end), zoomed_u_data(1:150:end,1:150:end,1), zoomed_v_data(1:150:end,1:150:end,1),'k','AutoScaleFactor', 0.5);
+hold on
+%%
+% depot
+plot(n(1), m(1),'bp','MarkerFaceColor','r','MarkerSize',15);
+hold on
+% customers
+plot(n(2:end),m(2:end),'o','color',[0.5,0.5,0.5],'MarkerFaceColor',"#A2142F")
+% text(n(1), m(1), 'Depot', 'VerticalAlignment', 'top', 'HorizontalAlignment', 'right');
+for i = 2:length(n)
+    text(n(i), m(i), sprintf('C%d', i-1), 'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left','Color','Red');
+end
+% Set the axis limits to match the size of the grid
+axis equal
+ylim([0,l_cs]);
+xlim([0,l_sw]);
+
+%% Generate random travel time matrix
+% params
+City = nodes;
+CityNum=size(City,2)-1;
+NodeNum=size(City,2);
+u = 20; %drone air speed (m/s)
+tau = 60; %launh/land time (s)
+%% Drone Wind Matrix
+% Initialize matrices to store approximated wind speed and direction
+approx_speed = zeros(NodeNum, NodeNum, time_range);
+approx_direction = zeros(NodeNum, NodeNum, time_range);
+
+
+% Loop over each time step
+for t = 1:time_range
+    % Loop over each pair of nodes
+    for i = 1:NodeNum
+        for j = 1:NodeNum
+            % If i = j, set the values to zero
+            if i == j
+                approx_speed(i, j, t) = 0;
+                approx_direction(i, j, t) = 0;
+                continue;
+            end
+            
+            % Define the coordinates for nodes i and j
+            y_coords = [nodes(1,i), nodes(1,j)];
+            x_coords = [nodes(2,i), nodes(2,j)];
+            
+            % Extract the wind data at nodes i and j
+            speed_i = zoomed_magnitude(x_coords(1), y_coords(1), t);
+            speed_j = zoomed_magnitude(x_coords(2), y_coords(2), t);
+            direction_i = zoomed_direction(x_coords(1), y_coords(1), t);
+            direction_j = zoomed_direction(x_coords(2), y_coords(2), t);
+            
+            % Compute the mean wind speed and direction of orgin and destination (other approx method could be used) 
+            mean_speed = mean([speed_i, speed_j]);
+            mean_direction = mean([direction_i, direction_j]);
+            
+            % Store the approximated wind speed and direction in the matrices
+            approx_speed(i, j, t) = mean_speed;
+            approx_direction(i, j, t) = mean_direction;
+        end
+    end
+end
+%% Realization of wind speed and direction matrix of nodes in different scenarios
+% Define the number of scenarios and standard deviation
+S = 10; % # of scenarios
+std_dev = 0.2;
+
+% Sample wind speed and direciton means
+m_w = zeros(NodeNum, time_range);  % Speed Mean
+m_theta = zeros(NodeNum, time_range);% Direction Mean
+for t = 1:time_range
+    for i = 1:NodeNum
+        y = nodes(1, i);
+        x = nodes(2, i);
+        m_w(i, t) = zoomed_magnitude(x, y, t); % wind speed at node i
+        m_theta(i, t) = zoomed_direction(x, y, t); % wind direciton at node i
+    end
+end
+
+% M_w = repmat(m_w,  [1, 1, S]);
+% M_theta = repmat(m_theta, [1, 1, S]);
+
+% Sample wind speed and direction with added noise for each scenario
+w = zeros(NodeNum, time_range, S); % Sampled wind speed
+theta = zeros(NodeNum, time_range, S); % Sampled wind direction
+
+% generate wind speed and direction at each node in different scenarios
+for s = 1:S
+    w(:, :, s) = m_w + std_dev * randn * m_w;
+    theta(:, :, s) = m_theta + std_dev * randn * m_theta;
+end
+
+%% Compute Drone Ground Speed Matrix for travel time function
+
+% Initialize t to be an empty array
+Svel = zeros(NodeNum, NodeNum, time_range, S); % Stochastic Ground Speed
+
+% Loop over each index in the 3-dimensional array t
+for s = 1:S
+    for t = 1:time_range
+        for i = 1:NodeNum
+            for j = 1:NodeNum
+            % Calculate the value of t at index (i,j,s) using the provided equation
+                if i ~= j
+                    w_appx = mean([w(i,t,s), w(j,t,s)]);
+                    m_w_appx = mean([m_w(i,t), m_w(j,t)]);
+                    numerator = Distance(i,j);
+                    denominator_s = sqrt(u^2 - (w_appx*sin(phi(i,j)-theta(i,t,s)))^2) + w_appx*cos(phi(i,j)-theta(i,t));
+                    Svel(i,j,t, s) = denominator_s;
+                else 
+                    Svel(i,j,t,s) = 0;
+                end
+            end
+        end
+    end
+end
+%% Svel piecewise function and visualze
+% Initialize an array to store the speeds
+speeds = zeros(time_range*10+1,1);
+
+% Loop over each time point and compute the speed
+for t = 0:time_range*10
+    % Call the piecewise_Svel function
+    speeds(t+1) = piecewise_Svel(8, 6, t, 1, Svel);
+end
+
+% Plot the piecewise function
+figure(1);
+plot(0:240, speeds, 'b', 'LineWidth', 1.5);
+xlabel('Time (minutes)');
+ylabel('Ground Speed (m/s)');
+title(sprintf('Piecewise Speed Function from Node %d to Node %d', 8, 6));
+grid on;
+hold on
+%% Stochastic Travel Time function and Visualize
+timeBreakpoints = 0:10:240;
+
+% Calculate travel times for each minute from 0 to 240
+travelTimes = zeros(1, length(0:1/60:240));
+for i = 1:length(0:1/60:240)
+    t = (i-1)/60;
+    travelTimes(i) = StochasticTravelTime(8, 6, t, 1, Svel, Distance, timeBreakpoints);
+end
+
+% Plot the travel time function
+figure(2);
+plot(0:1/60:240, travelTimes,'r','LineWidth', 1.5);
+xlabel('Time (minutes)');
+ylabel('Travel Time (minutes)');
+title('Travel Time from Node 8 to 6 over Time');
+grid on;
+
+%% Generate Deterministic Time and No Wind Time
+DTime = zeros(NodeNum, NodeNum, time_range); % Deterministic Wind Travel Time
+NTime = zeros(NodeNum, NodeNum); % No Wind Travel Time
+
+% Loop over each index in the 3-dimensional array t
+for s = 1:S
+    for t = 1:time_range
+        for i = 1:NodeNum
+            for j = 1:NodeNum
+            % Calculate the value of t at index (i,j,s) using the provided equation
+                if i ~= j
+                    w_appx = mean([w(i,t,s), w(j,t,s)]);
+                    m_w_appx = mean([m_w(i,t), m_w(j,t)]);
+                    numerator = Distance(i,j);
+                    denominator_d = sqrt(u^2 - (m_w_appx*sin(phi(i,j)-m_theta(i,t)))^2) + m_w_appx*cos(phi(i,j)-m_theta(i,t));
+                    denominator_n = u;
+                    DTime(i,j) = numerator / denominator_d;
+                    NTime(i,j) = numerator / denominator_n;
+                else 
+                    DTime(i,j) = 0;
+                    NTime(i,j) = 0;
+                end
+            end
+        end
+    end
+end
+
+
+%% Convert Svel and Distance to Py files
+% Initialize t to be an empty array
+% STime2py = cell(S,1);
+% % Loop over each index in the 3-dimensional array t
+% for i = 1:NodeNum
+%     for j = 1:NodeNum
+%         for s = 1:S
+%             % Calculate the value of t at index (i,j,s) using the provided equation
+%             if i ~= j
+%                numerator = Distance(i,j);
+%                denominator = sqrt(u^2 - (w(s,i)*sin(phi(i,j)-theta(s,i)))^2) + w(s,i)*cos(phi(i,j)-theta(s,i));
+%                STime2py{s}(i,j) = numerator / denominator + tau;
+%             else 
+%                STime2py{s}(i,j) = 0;
+%             end
+%         end
+%     end
+% end
+
+% Random demand for each customer
+Demand = [0;randi([1,5],[C_Num,1])];
+% load("Demand50.mat") % for fixed comparison
+save('STD_Stag_Rand_H80_C8_S10_Z1_para_9am_1pm.mat', 'Svel','DTime','NTime','nodes','Demand','Distance');
